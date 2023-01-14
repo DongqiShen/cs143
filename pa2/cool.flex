@@ -50,6 +50,29 @@ extern YYSTYPE cool_yylval;
  */
 
 DARROW          =>
+CLASS           class
+ELSE            else
+FI              fi
+IF              if
+IN              in
+INHERITS        inherits
+LET             let
+LOOP            loop
+POOL            pool
+THEN            then
+WHILE           while
+CASE            case
+ESAC            esac
+OF              of
+NEW             new
+ISVOID          isvoid
+ASSIGN          <-
+NOT             not
+LE              <=
+
+%x      COMMENT
+%x      STRING
+%x      STRING_ESCAPE
 
 %%
 
@@ -57,16 +80,75 @@ DARROW          =>
   *  Nested comments
   */
 
+  /* 单行注释 */
+--.*$ {}
+
+"(*"  { BEGIN(COMMENT); }
+"*)"  {
+    cool_yylval.error_msg = "Unmatched *)";
+    return (ERROR);
+}
+
+<COMMENT><<EOF>> {
+    BEGIN(INITIAL);
+    cool_yylval.error_msg = "EOF in comment";
+    return (ERROR);
+}
+
+<COMMENT>\n {  curr_lineno++;  }
+
+<COMMENT>"*)" {
+    BEGIN(INITIAL);
+}
 
  /*
   *  The multiple-character operators.
   */
 {DARROW}		{ return (DARROW); }
+{LE} { return (LE); }
+{ASSIGN} { return (ASSIGN); }
 
  /*
   * Keywords are case-insensitive except for the values true and false,
   * which must begin with a lower-case letter.
   */
+  /* 关键字 */
+
+{CLASS} { return (CLASS); }
+{ELSE} { return (ELSE); }
+{FI} { return (FI); }
+{IF} { return (IF); }
+{IN} { return (IN); }
+{INHERITS} { return (INHERITS); }
+{LET} { return (LET); }
+{LOOP} { return (LOOP); }
+{POOL} { return (POOL); }
+{THEN} { return (THEN); }
+{WHILE} { return (WHILE); }
+{CASE} { return (CASE); }
+{ESAC} { return (ESAC); }
+{OF} { return (OF); }
+{NEW} { return (NEW); }
+{ISVOID} { return (ISVOID); }
+{NOT} { return (NOT); }
+
+  /*  bool类型  */
+t[Rr][Uu][Ee]   { cool_yylval.boolean = true; return (BOOL_CONST); }
+f[Aa][Ll][Ss][Ee] { cool_yylval.boolean = false; return (BOOL_CONST); }
+
+  /*  类名和变量名  */
+[A-Z_][a-zA-Z0-9_]* { 
+  cool_yylval.symbol = idtable.add_string(yytext, yyleng);
+  return (TYPEID);
+}
+[a-z_][a-zA_Z0-9_]* {
+  cool_yylval.symbol = idtable.add_string(yytext, yyleng);
+  return (OBJECTID);
+}
+
+  /* 整数 */
+[0-9][0-9]*     { cool_yylval.symbol = inttable.add_string(yytext); return (INT_CONST);}
+ 
 
 
  /*
@@ -76,5 +158,108 @@ DARROW          =>
   *
   */
 
+\" {
+  string_buf_ptr = string_buf;
+  BEGIN(STRING);
+}
+
+<STRING><<EOF>> {
+	  BEGIN(INITIAL);
+	  cool_yylval.error_msg = "EOF in string constant";
+	  return ERROR;
+}
+
+<STRING>\n {
+    ++curr_lineno;
+    BEGIN(INITIAL);
+	  cool_yylval.error_msg = "Unterminated string constant";
+	  return ERROR;
+}
+
+<STRING>\0 {
+	  BEGIN(INITIAL);
+	  cool_yylval.error_msg = "String contains null character";
+	  return ERROR;
+}
+
+<STRING>\" {
+    BEGIN(INITIAL);
+    *string_buf_ptr = '\0';
+    cool_yylval.symbol = stringtable.add_string(string_buf);
+    return (STR_CONST);
+}
+
+<STRING>\\n {
+	  if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST-1]) {
+		    BEGIN(INITIAL);
+		    cool_yylval.error_msg = "String constant too long";
+		    return ERROR;
+	  }
+	  *string_buf_ptr++ = '\n';
+}
+
+<STRING>\\t {
+    if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST - 1]) {
+        BEGIN(INITIAL);
+        cool_yylval.error_msg = "String constant too long";
+        return ERROR;
+    }
+    *string_buf_ptr++ = '\t';
+}
+
+<STRING>\\b {
+    if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST - 1]) {
+        BEGIN(INITIAL);
+        cool_yylval.error_msg = "String constant too long";
+        return ERROR;
+    }
+    *string_buf_ptr++ = '\b';
+}
+
+<STRING>\\f {
+    if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST - 1]) {
+        BEGIN(INITIAL);
+        cool_yylval.error_msg = "String constant too long";
+        return ERROR;
+    }
+    *string_buf_ptr++ = '\f';
+}
+
+<STRING>\\(.|\n)	{
+	  if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST-1]) {
+		    BEGIN(INITIAL);
+		    cool_yylval.error_msg = "String constant too long";
+		  return ERROR;
+	  }
+	  *string_buf_ptr++ = yytext[1];
+}
+
+<STRING>[^\\\n\"]+ {
+	  char *yptr = yytext;
+	  while ( *yptr ) {
+		  if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST-1]) {
+			  BEGIN(INITIAL);
+			  cool_yylval.error_msg = "String constant too long";
+			  return ERROR;
+		  }
+		  *string_buf_ptr++ = *yptr++;
+	  }
+}
+
+
+
+  /*  单个合法字符和非法字符  */
+[\[\]\'>] {
+    cool_yylval.error_msg = yytext;
+    return (ERROR);
+}
+
+[ \t\f\r\v]  {}
+\n { ++curr_lineno; }
+
+
+. {
+    return yytext[0];
+}
 
 %%

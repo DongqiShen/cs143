@@ -10,6 +10,8 @@
 下图直观地描述了``Lex``的输入和输出:
 ![An overview of Lex](./assets/an%20overview%20of%20lex.png)
 
+所有在``Lex``中使用到的``token``都需要提前在``yacc``的定义，并且通过命令自动生成对应的头文件``y.tab.h``。``flex``在使用时需要``include``这个头文件。
+
 ### yacc
 上面提到了``yacc``，在这里简单介绍一下。``yacc``（Yet Another Compiler Compiler），是Unix/Linux上一个用来生成编译器的编译器（编译器代码生成器）。``yacc``生成的编译器主要是用C语言写成的词法分析器（Parser），需要与词法分析器``Lex``一起使用，再把两部份产生出来的C程序一并编译。下图说明两者之间的关系：
 ![Lex with yacc](./assets/lex_with_yacc.png)
@@ -172,108 +174,89 @@ LE              <=
 ```
 %x STRING
 %x STRING_ESCAPE
-```
-准备一个全局变量，存放读取到的字符串内容:
-```
-static std::vector<char> stringArray;
-```
+
 在初始状态下的引号``"``触发进入``STRING``状态：
 ```
 \" {
-    stringCaller = INITIAL;
-    stringArray.clear();
-    BEGIN(STRING);
+  string_buf_ptr = string_buf;
+  BEGIN(STRING);
+}
+当在字符串中出现``EOF``，则表示出错
+```
+<STRING><<EOF>> {
+	  BEGIN(INITIAL);
+	  cool_yylval.error_msg = "EOF in string constant";
+	  return ERROR;
 }
 ```
-当没有转义符的情况下遇到``"``，字符串读取结束，应该返回:
+当在字符串中遇到换行符
 ```
-<STRING>[^\"\\]*\" {
-    // push back string
-    // does not include the last character \"
-    stringArray.insert(string.end(), yytext, yytext + yyleng - 1);
-    // setup string table
-    cool_yylval.symbol = stringtable.add_string(&stringArray[0], stringArray.size());
-    // exit
-    BEGIN(stringCaller);
+<STRING>\n {
+    ++curr_lineno;
+    BEGIN(INITIAL);
+	  cool_yylval.error_msg = "Unterminated string constant";
+	  return ERROR;
+}
+```
+当在字符串中出现结符
+```
+<STRING>\0 {
+	  BEGIN(INITIAL);
+	  cool_yylval.error_msg = "String contains null character";
+	  return ERROR;
+}
+```
+
+当在字符串状态时遇到``"``，字符串读取结束，应该返回:
+```
+<STRING>\" {
+    BEGIN(INITIAL);
+    *string_buf_ptr = '\0';
+    cool_yylval.symbol = stringtable.add_string(string_buf);
     return (STR_CONST);
 }
+
 ```
-若遇见转义符，应进入转义符处理状态:
-```
-<STRING>[^\"\\]*\\ {
-    // does not include the last character escape
-    stringArray.insert(stringArray.end(), yytext, yytext + yyleng - 1);
-    BEGIN(STRING_ESCAPE);
-}
-```
+
 少数几个转义符会被真正解析成单个字符：
 ```
-<STRING_ESCAPE>n {
-    stringArray.push_back("\n");
-    BEGIN(STRING);
+<<STRING>\\n {
+	  if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST-1]) {
+		    BEGIN(INITIAL);
+		    cool_yylval.error_msg = "String constant too long";
+		    return ERROR;
+	  }
+	  *string_buf_ptr++ = '\n';
 }
-<STRING_ESCAPE>b {
-    stringArray.push_back("\b");
-    BEGIN(STRING);
+
+<STRING>\\t {
+    if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST - 1]) {
+        BEGIN(INITIAL);
+        cool_yylval.error_msg = "String constant too long";
+        return ERROR;
+    }
+    *string_buf_ptr++ = '\t';
 }
-<STRING_ESCAPE>t {
-    stringArray.push_back("\t");
-    BEGIN(STRING);
+
+<STRING>\\b {
+    if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST - 1]) {
+        BEGIN(INITIAL);
+        cool_yylval.error_msg = "String constant too long";
+        return ERROR;
+    }
+    *string_buf_ptr++ = '\b';
 }
-<STRING_ESCAPE>f {
-    stringArray.push_back("\f");
-    BEGIN(STRING);
-}
-```
-其余在``\``后的字符被解析成字符本身：
-```
-<STRING_ESCAPE>. {
-    stringArray.push_back(yytext[0]);
-    BEGIN(STRING);
-}
-```
-特别的，转义符``\``后是换行符``\n``，应作换行符处理:
-```
-<STRING_ESCAPE>\n {
-    stringArray.push_back('\n');
-    ++curr_lineno;
-    BEGIN(STRING);
-}
-```
-字面量中出现终止符``\0``应作错误处理：
-```
-<STRING_ESCAPE>0 {
-    cool_yylval.error_msg = "String contains null character";
-    BEGIN(STRING);
-    return (ERROR);
+
+<STRING>\\f {
+    if ((string_buf_ptr - 1) == &string_buf[MAX_STR_CONST - 1]) {
+        BEGIN(INITIAL);
+        cool_yylval.error_msg = "String constant too long";
+        return ERROR;
+    }
+    *string_buf_ptr++ = '\f';
 }
 ```
-字面量行尾无转义符、无引号``"``，字符串前后引号不匹配，作错误处理：
-```
-<STRING>[^\"\\]*$ {
-    // push first
-    // contains the last character for yytext does not include \n
-    stringArray.insert(stringArray.end(), yytext, yytext + yyleng);
-    // setup error later
-    cool_yylval.error_msg = "Unterminated string constant";
-    BEGIN(stringCaller);
-    ++curr_lineno;
-    return (ERROR);
-}
-```
-出现``EOF``应作错误处理：
-```
-<STRING_ESCAPE><<EOF>> {
-    cool_yylval.error_msg = "EOF in string constant";
-    BEGIN(STRING);
-    return (ERROR);
-}
-<STRING><<EOF>> {
-    cool_yylval.error_msg = "EOF in string constant";
-    BEGIN(stringCaller);
-    return (ERROR);
-}
-```
+
 #### 单个的合法字符和非法字符
 同其他编程语言一样，``Cool``也接受一些单个字符。有余接受的合法字符很多，非法字符占少数，故使用``.``匹配所有字符，并将非法字符单独列出。
 
@@ -399,7 +382,7 @@ f[Aa][Ll][Ss][Ee] {
 
 ## FAQ
 **Q**: 每一个action中，默认的操作是将输入直接输出，问题是这个“输出”是到哪里？
-**A**:
+**A**: 直接输出到``yylex()``这个函数中。事实上，``action``使用的是``c``的语法，也是实际需要执行的代码块，因此在生成的文件``lex.yy.c``中，``action``被直接原封不动得拷贝到这个文件中，也即``yylex()``这个函数中。
 
 **Q**: yytext(), yytext, yyleng等这些函数和变量的具体用法，包括``action``中进行``return``后的具体作用和操作是什么？
 **A**:
@@ -414,4 +397,4 @@ f[Aa][Ll][Ss][Ee] {
 - [2] [编译原理之词法分析Lex](https://juejin.cn/post/6995198062410858526)
 - [3] [Lexical Analysis With Flex](http://westes.github.io/flex/manual/index.html)
 - [4] [Lex − A Lexical Analyzer Generator](http://www.cs.rpi.edu/courses/fall00/modcomp3/lex.pdf)
-- 
+- [5] [Lex与YACC详解](https://zhuanlan.zhihu.com/p/143867739)
